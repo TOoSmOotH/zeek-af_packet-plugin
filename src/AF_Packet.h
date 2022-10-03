@@ -10,7 +10,6 @@ extern "C" {
 
 #include <errno.h>          // errorno
 #include <unistd.h>         // close()
-#include <linux/version.h>  // kernel version
 
 #include <net/ethernet.h>      // ETH_P_ALL
 #include <linux/if.h>          // ifreq
@@ -61,6 +60,7 @@ private:
 
 	int current_filter;
 	unsigned int num_discarded;
+	int checksum_mode;
 
 	int socket_fd;
 	RX_Ring *rx_ring;
@@ -68,9 +68,9 @@ private:
 
 	bool BindInterface();
 	bool EnablePromiscMode();
-	bool ConfigureFanoutGroup(bool enabled, bool defrag=false);
+	bool ConfigureFanoutGroup(bool enabled, bool defrag);
 	bool ConfigureHWTimestamping(bool enabled);
-	uint32_t GetFanoutMode(bool defrag=false);
+	uint32_t GetFanoutMode(bool defrag);
 };
 
 }

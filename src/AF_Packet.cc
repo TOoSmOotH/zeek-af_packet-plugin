@@ -21,11 +21,17 @@ AF_PacketSource::AF_PacketSource(const std::string& path, bool is_live)
 	current_filter = -1;
 	props.path = path;
 	props.is_live = is_live;
+
+	checksum_mode = zeek::BifConst::AF_Packet::checksum_validation_mode->AsEnum();
 	}
 
 void AF_PacketSource::Open()
 	{
 	uint64_t buffer_size = zeek::BifConst::AF_Packet::buffer_size;
+	uint64_t block_size = zeek::BifConst::AF_Packet::block_size;
+	int block_timeout_msec = static_cast<int>(zeek::BifConst::AF_Packet::block_timeout * 1000.0);
+	int link_type = zeek::BifConst::AF_Packet::link_type;
+
 	bool enable_hw_timestamping = zeek::BifConst::AF_Packet::enable_hw_timestamping;
 	bool enable_fanout = zeek::BifConst::AF_Packet::enable_fanout;
 	bool enable_defrag = zeek::BifConst::AF_Packet::enable_defrag;
@@ -40,7 +46,7 @@ void AF_PacketSource::Open()
 
 	// Create RX-ring
 	try {
-		rx_ring = new RX_Ring(socket_fd, buffer_size);
+		rx_ring = new RX_Ring(socket_fd, buffer_size, block_size, block_timeout_msec);
 	} catch (RX_RingException& e) {
 		Error(errno ? strerror(errno) : "unable to create RX-ring");
 		close(socket_fd);
@@ -62,7 +68,7 @@ void AF_PacketSource::Open()
 		return;
 		}
 
-	if ( ! ConfigureFanoutGroup(enable_fanout) )
+	if ( ! ConfigureFanoutGroup(enable_fanout, enable_defrag) )
 		{
 		Error(errno ? strerror(errno) : "failed to join fanout group");
 		close(socket_fd);
@@ -79,7 +85,7 @@ void AF_PacketSource::Open()
 	props.netmask = NETMASK_UNKNOWN;
 	props.selectable_fd = socket_fd;
 	props.is_live = true;
-	props.link_type = DLT_EN10MB; // Ethernet headers
+	props.link_type = link_type;
 
 	stats.received = stats.dropped = stats.link = stats.bytes_received = 0;
 	num_discarded = 0;
@@ -184,8 +190,16 @@ inline uint32_t AF_PacketSource::GetFanoutMode(bool defrag)
 	switch ( zeek::BifConst::AF_Packet::fanout_mode->AsEnum() ) {
 		case BifEnum::AF_Packet::FANOUT_CPU: fanout_mode = PACKET_FANOUT_CPU;
 			break;
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0)
+	#ifdef PACKET_FANOUT_QM
 		case BifEnum::AF_Packet::FANOUT_QM: fanout_mode = PACKET_FANOUT_QM;
+			break;
+	#endif
+	#ifdef PACKET_FANOUT_CBPF
+		case BifEnum::AF_Packet::FANOUT_CBPF: fanout_mode = PACKET_FANOUT_CBPF;
+			break;
+	#endif
+	#ifdef PACKET_FANOUT_EBPF
+		case BifEnum::AF_Packet::FANOUT_EBPF: fanout_mode = PACKET_FANOUT_EBPF;
 			break;
 	#endif
 		default: fanout_mode = PACKET_FANOUT_HASH;
@@ -217,7 +231,6 @@ bool AF_PacketSource::ExtractNextPacket(zeek::Packet* pkt)
 
 	struct tpacket3_hdr *packet = 0;
 	const u_char *data;
-	struct timeval ts;
 	while ( true )
 		{
 		if ( ! rx_ring->GetNextPacket(&packet) )
@@ -237,6 +250,40 @@ bool AF_PacketSource::ExtractNextPacket(zeek::Packet* pkt)
 			}
 
 		pkt->Init(props.link_type, &current_hdr.ts, current_hdr.caplen, current_hdr.len, data);
+
+		if ( packet->tp_status & TP_STATUS_VLAN_VALID )
+			pkt->vlan = packet->hv1.tp_vlan_tci;
+
+#if ZEEK_VERSION_NUMBER >= 50100
+		switch ( checksum_mode )
+			{
+			case BifEnum::AF_Packet::CHECKSUM_OFF:
+				{
+				// If set to off, just accept whatever checksum in the packet is correct and
+				// skip checking it here and in Zeek.
+				pkt->l4_checksummed = true;
+				break;
+				}
+			case BifEnum::AF_Packet::CHECKSUM_KERNEL:
+				{
+				// If set to kernel, check whether the kernel thinks the checksum is valid. If it
+				// does, tell Zeek to skip checking by itself.
+				if ( ( (packet->tp_status & TP_STATUS_CSUM_VALID) != 0 ) ||
+				     ( (packet->tp_status & TP_STATUS_CSUMNOTREADY) != 0 ) )
+					pkt->l4_checksummed = true;
+				else
+					pkt->l4_checksummed = false;
+				break;
+				}
+			case BifEnum::AF_Packet::CHECKSUM_ON:
+			default:
+				{
+				// Let Zeek handle it.
+				pkt->l4_checksummed = false;
+				break;
+				}
+			}
+#endif
 
 		if ( current_hdr.len == 0 || current_hdr.caplen == 0 )
 			{
