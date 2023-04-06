@@ -1,10 +1,23 @@
 
 #include "zeek/zeek-config.h"
 
+// Starting with Zeek 6.0, zeek-config.h does not provide the
+// ZEEK_VERSION_NUMBER macro anymore when compiling a included
+// plugin. Use the new zeek/zeek-version.h header if it exists.
+#if __has_include("zeek/zeek-version.h")
+#include "zeek/zeek-version.h"
+#endif
+
 #include "AF_Packet.h"
 #include "RX_Ring.h"
 
 #include "af_packet.bif.h"
+
+// CentOS 7 if_packet.h does not yet have this define, provide it
+// explicitly if missing.
+#ifndef TP_STATUS_CSUM_VALID
+#define TP_STATUS_CSUM_VALID (1 << 7)
+#endif
 
 using namespace zeek::iosource::pktsrc;
 
